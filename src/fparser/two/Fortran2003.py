@@ -5873,7 +5873,12 @@ class Mult_Operand(BinaryOpBase):  # R704
 
     """
 
-    subclass_names = ["Level_1_Expr"]
+    # EUM: Added 'Level_2_Unary_Expr' to permit unary minus directly
+    # after a multiplication or division operator (e.g. ``a * -b``).
+    # The Fortran standard allows this — the ``-`` is a level-2 unary
+    # expression — but upstream fparser 0.2.4 omits it, causing parse
+    # failures on expressions like ``dtaus_all(ik, ix)*-((...)**(-2))``.
+    subclass_names = ["Level_1_Expr", "Level_2_Unary_Expr"]
     use_names = ["Mult_Operand"]
 
     @staticmethod
@@ -5947,8 +5952,50 @@ class Level_2_Expr(BinaryOpBase):  # R706
     subclass_names = ["Level_2_Unary_Expr"]
     use_names = ["Level_2_Expr"]
 
+    # EUM: Patterns for detecting unary minus after * or / operators.
+    # The ``add_op`` pattern is ``[+-]`` and ``BinaryOpBase.match`` uses
+    # ``rsplit()`` which finds the rightmost ``+``/``-``.  In an expression
+    # like ``a + d * -b`` the rightmost ``-`` (unary minus) is treated as
+    # a binary subtraction, causing the split ``lhs="a + d *"``,
+    # ``rhs="b"`` — which fails because ``a + d *`` is not valid.
+    # We rewrite ``*-`` / ``/-`` as ``*(-1)*`` / ``/(-1)/`` before splitting.
+    # This is mathematically equivalent and only affects the internal
+    # string representation, not the AST semantics.
+    _EUM_UNARY_MINUS_MUL_RE = re.compile(r"(?<!\*)\*\s*-\s*")
+    _EUM_UNARY_MINUS_DIV_RE = re.compile(r"(?<!\*)/\s*-\s*")
+
     @staticmethod
     def match(string):
+        """Matches the level-2-expr rule.
+
+        EUM extension: if the string contains a unary minus directly
+        after a ``*`` or ``/`` operator, rewrite it as
+        ``*(-1)*`` / ``/(-1)/`` before delegating to the standard
+        ``BinaryOpBase.match``.  This prevents the rsplit in
+        ``BinaryOpBase.match`` from treating the unary minus as a binary
+        subtraction operator.
+
+        :param str string: the string to match.
+
+        :returns: a tuple of size 3 containing an fparser2 class \
+            instance matching a level-2-expr expression, a string \
+            containing the matched operator and an fparser2 class \
+            instance matching an add-operand if there is a match, or \
+            None if there is not.
+        :rtype: (subclass of :py:class:`fparser.two.utils.Base`, str, \
+            subclass of :py:class:`fparser.two.utils.Base`) or NoneType
+
+        """
+        if Level_2_Expr._EUM_UNARY_MINUS_MUL_RE.search(
+            string
+        ) or Level_2_Expr._EUM_UNARY_MINUS_DIV_RE.search(string):
+            fixed = Level_2_Expr._EUM_UNARY_MINUS_MUL_RE.sub("*(-1)*", string)
+            fixed = Level_2_Expr._EUM_UNARY_MINUS_DIV_RE.sub("/(-1)/", fixed)
+            result = BinaryOpBase.match(
+                Level_2_Expr, pattern.add_op.named(), Add_Operand, fixed
+            )
+            if result is not None:
+                return result
         return BinaryOpBase.match(
             Level_2_Expr, pattern.add_op.named(), Add_Operand, string
         )
